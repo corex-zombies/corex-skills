@@ -1,0 +1,555 @@
+/* =============================================================================
+   COREX :: Skill Tree NUI
+   ============================================================================= */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  color: #fff;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+  user-select: none;
+}
+
+.skills-root {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  background: rgba(7, 8, 11, 0.18);
+  z-index: 999;
+}
+
+.skills-root.hidden { display: none; }
+
+/* --- panel ------------------------------------------------------------- */
+.panel {
+  width: min(1360px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  background: rgba(7, 8, 11, 0.92);
+  border: 0.5px solid rgba(255,255,255,0.08);
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 24px 80px rgba(0,0,0,0.6);
+}
+
+/* --- header ------------------------------------------------------------ */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 0.5px solid rgba(255,255,255,0.06);
+  flex-shrink: 0;
+}
+
+.player { display: flex; align-items: center; gap: 12px; }
+.avatar {
+  width: 40px;
+  height: 40px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.avatar svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.avatar-letter {
+  position: relative;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  color: #fff;
+}
+.player-text { display: flex; flex-direction: column; gap: 2px; }
+.player-cap {
+  font-size: 8.5px;
+  font-weight: 500;
+  letter-spacing: 2.4px;
+  color: rgba(255,255,255,0.36);
+  text-transform: uppercase;
+}
+.player-line { white-space: nowrap; }
+.player-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #fff;
+  letter-spacing: 0.2px;
+}
+.player-level {
+  font-size: 11px;
+  color: rgba(255,255,255,0.5);
+  font-weight: 400;
+  margin-left: 6px;
+}
+
+/* XP progress bar (under the player name, shows progress toward the next
+   skill point at Config.XpPerPoint chunks) */
+.xp-bar {
+  position: relative;
+  width: 240px;
+  height: 14px;
+  margin-top: 8px;
+  border: 1px solid rgba(251,191,36,0.40);
+  background: rgba(251,191,36,0.06);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.xp-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #FBBF24, #F59E0B);
+  box-shadow: 0 0 6px rgba(251,191,36,0.4) inset;
+  transition: width 0.45s ease-out;
+}
+.xp-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.7);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* Floating XP toasts. Sit top-right; do NOT capture clicks. */
+.xp-toasts {
+  position: fixed;
+  top: 7vh;
+  right: 3vw;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+  z-index: 9999;
+}
+.xp-toast {
+  padding: 8px 14px;
+  border: 0.5px solid rgba(96,165,250,0.32);
+  background: rgba(20,24,36,0.85);
+  border-radius: 4px;
+  font-size: 12px;
+  letter-spacing: 0.4px;
+  color: #fff;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.35);
+  animation: xpToastIn 0.25s ease-out, xpToastOut 0.4s ease-in 2.6s forwards;
+  white-space: nowrap;
+}
+.xp-toast .xp-amt {
+  color: #93C5FD;
+  font-weight: 600;
+  margin-right: 6px;
+}
+.xp-toast.xp-toast-point {
+  border-color: rgba(251,191,36,0.5);
+  background: rgba(40,28,8,0.92);
+}
+.xp-toast.xp-toast-point .xp-amt { color: #FBBF24; }
+
+@keyframes xpToastIn {
+  from { opacity: 0; transform: translateX(20px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes xpToastOut {
+  to { opacity: 0; transform: translateX(20px); }
+}
+
+/* =============================================================================
+   Lockpick minigame — overlay shown when exports['corex-skills']:OpenLockpick
+   is called by any other resource. k_lock widens the green zone.
+   ============================================================================= */
+.lockpick {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.55);
+  z-index: 99999;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+.lockpick.hidden { display: none; }
+
+.lp-card {
+  width: 420px;
+  padding: 22px 26px 24px;
+  background: rgba(15, 18, 25, 0.95);
+  border: 1px solid rgba(251,191,36,0.35);
+  border-radius: 8px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.04);
+  color: #fff;
+}
+.lp-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 3px;
+  color: #FBBF24;
+  text-align: center;
+  margin-bottom: 16px;
+}
+.lp-progress {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.lp-pin {
+  width: 32px;
+  height: 5px;
+  background: rgba(255,255,255,0.10);
+  border-radius: 2px;
+  transition: background 0.2s ease-out, box-shadow 0.2s ease-out;
+}
+.lp-pin.set {
+  background: #10B981;
+  box-shadow: 0 0 8px rgba(16,185,129,0.5);
+}
+.lp-pin.fail {
+  background: #DC2626;
+  box-shadow: 0 0 8px rgba(220,38,38,0.5);
+}
+
+.lp-track {
+  position: relative;
+  height: 28px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.lp-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(16,185,129,0.25);
+  border-left: 2px solid rgba(16,185,129,0.7);
+  border-right: 2px solid rgba(16,185,129,0.7);
+  /* width + left set by JS */
+}
+.lp-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: #FBBF24;
+  box-shadow: 0 0 8px #FBBF24;
+  /* left set by JS, no transition: we drive it manually for precision */
+}
+
+.lp-hint {
+  margin-top: 14px;
+  font-size: 11.5px;
+  color: rgba(255,255,255,0.65);
+  text-align: center;
+}
+.lp-hint kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  border: 1px solid rgba(255,255,255,0.20);
+  border-radius: 3px;
+  background: rgba(255,255,255,0.05);
+  color: #fff;
+}
+.lp-status {
+  display: block;
+  margin-top: 6px;
+  font-size: 10px;
+  letter-spacing: 1.6px;
+  color: #FBBF24;
+  text-transform: uppercase;
+}
+
+/* segmented control */
+.segmented {
+  display: flex;
+  border: 0.5px solid rgba(255,255,255,0.08);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.seg {
+  padding: 8px 14px;
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 1.8px;
+  color: rgba(255,255,255,0.4);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-transform: uppercase;
+  font-family: inherit;
+  transition: color .15s, background .15s;
+}
+.seg:hover:not(.seg-disabled) { color: rgba(255,255,255,0.7); }
+.seg-active { background: rgba(255,255,255,0.06); color: #fff; }
+.seg-disabled { color: rgba(255,255,255,0.22); cursor: not-allowed; }
+.seg + .seg { border-left: 0.5px solid rgba(255,255,255,0.08); }
+
+/* header right cluster */
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.points {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border: 0.5px solid rgba(251,191,36,0.32);
+  background: rgba(251,191,36,0.06);
+  border-radius: 3px;
+}
+.points-label {
+  font-size: 8.5px;
+  font-weight: 500;
+  letter-spacing: 1.8px;
+  color: rgba(251,191,36,0.7);
+}
+.points-num {
+  font-size: 13px;
+  font-weight: 500;
+  color: #FBBF24;
+  letter-spacing: 0.5px;
+}
+.points-num em {
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 400;
+  color: rgba(251,191,36,0.55);
+  margin-left: 2px;
+}
+
+.btn-icon {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0.5px solid rgba(255,255,255,0.08);
+  border-radius: 3px;
+  color: rgba(255,255,255,0.55);
+  cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+  font-family: inherit;
+  padding: 0;
+}
+.btn-icon:hover {
+  color: #fff;
+  border-color: rgba(255,255,255,0.22);
+  background: rgba(255,255,255,0.04);
+}
+.btn-icon.is-hidden { display: none; }
+
+/* --- tree -------------------------------------------------------------- */
+.tree-wrap {
+  position: relative;
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+  background-color: #07080B;
+  background-image: url("assets/tree-bg.png");
+  background-size: 100% 100%;
+  background-position: center center;
+  background-repeat: no-repeat;
+}
+.tree-wrap::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(7, 8, 11, 0.04);
+  pointer-events: none;
+}
+.tree-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  position: relative;
+  z-index: 1;
+}
+
+/* SVG text styles */
+.path-title {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 3.2px;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+.tier-marker-label {
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 3.5px;
+  fill: rgba(255,255,255,0.45);
+  text-transform: uppercase;
+  pointer-events: none;
+}
+.node-label {
+  font-size: 10px;
+  font-weight: 400;
+  fill: rgba(255,255,255,0.62);
+  text-anchor: middle;
+  pointer-events: none;
+  transition: fill .15s, font-weight .15s;
+}
+.node-label-locked { fill: rgba(255,255,255,0.32); }
+.node-label-selected { font-weight: 500; }
+.node-label-capstone {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+/* hex node group */
+.node-group { cursor: pointer; transition: opacity .15s; }
+.node-hover-ring {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .14s ease, stroke-width .14s ease;
+}
+.node-group:hover .node-hover-ring { opacity: 0.72; stroke-width: 1.25; }
+.node-group:hover .node-label      { fill: rgba(255,255,255,0.88); }
+.node-group.is-locked              { cursor: default; }
+.node-group.is-locked:hover .node-hover-ring { opacity: 0.24; stroke-width: 0.9; }
+
+.network-guide { pointer-events: none; }
+
+/* halo / connection / hover animations */
+@keyframes haloPulse {
+  0%, 100% { opacity: 0.32; }
+  50%      { opacity: 0.7; }
+}
+.halo-pulse { animation: haloPulse 2.6s ease-in-out infinite; }
+
+@keyframes connFlow { to { stroke-dashoffset: -36; } }
+.conn-flow { animation: connFlow 2.8s linear infinite; }
+
+.node-group:hover .node-icon-wrap { transform: scale(1.06); transition: transform .18s ease; }
+.node-icon-wrap                   { transition: transform .18s ease; }
+
+@keyframes ringPulse {
+  0%, 100% { stroke-width: 1.05; opacity: 0.58; }
+  50%      { stroke-width: 1.25; opacity: 0.92; }
+}
+.selection-plate, .selection-ring { pointer-events: none; }
+.selection-ring                   { animation: ringPulse 2.6s ease-in-out infinite; }
+
+/* --- detail panel ------------------------------------------------------ */
+.detail {
+  display: flex;
+  align-items: stretch;
+  gap: 18px;
+  padding: 18px 20px;
+  border-top: 0.5px solid rgba(255,255,255,0.06);
+  background: rgba(255,255,255,0.012);
+  flex-shrink: 0;
+  min-height: 92px;
+}
+
+.detail-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: 1px;
+  font-family: inherit;
+}
+
+.detail-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.detail-tag {
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 1.8px;
+  text-transform: uppercase;
+}
+.detail-name {
+  font-size: 15px;
+  font-weight: 500;
+  color: #fff;
+  letter-spacing: 0.1px;
+}
+.detail-desc {
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: rgba(255,255,255,0.55);
+  font-weight: 400;
+  text-wrap: pretty;
+}
+
+.detail-action {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  flex-shrink: 0;
+  min-width: 110px;
+}
+.detail-cost {
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 1.6px;
+  color: rgba(251,191,36,0.7);
+  text-transform: uppercase;
+}
+.detail-cost strong {
+  font-weight: 500;
+  color: #FBBF24;
+  margin-right: 2px;
+}
+.btn {
+  border: none;
+  padding: 9px 16px;
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: filter .15s, background .15s, color .15s;
+  width: 100%;
+}
+.btn-unlock { background: #FBBF24; color: #0A0B0E; }
+.btn-unlock:hover { filter: brightness(1.08); }
+.btn-unlocked {
+  background: rgba(16,185,129,0.08);
+  border: 0.5px solid rgba(16,185,129,0.32);
+  color: #6EE7B7;
+  cursor: default;
+}
+.btn-locked {
+  background: rgba(255,255,255,0.04);
+  border: 0.5px solid rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.32);
+  cursor: not-allowed;
+}
