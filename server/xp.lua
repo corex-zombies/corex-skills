@@ -5,7 +5,7 @@
 -- xp.lua never touches metadata directly. Sources are toggleable via Config.Xp.
 --
 --   * Playtime drip — slow accumulator for casual players (AFK-guarded).
---   * Zombie kill   — listens to a relay event from corex-zombies.
+--   * Zombie kill   — accepts validated server lifetime decisions from corex-zombies.
 --   * Event done    — listens to corex-events completion.
 --   * Redzone loot  — listens to corex-loot container-emptied event.
 --   * Survival      — bonus XP on infection cure (corex-survival).
@@ -23,7 +23,6 @@ end
 -- ---------------------------------------------------------------------------
 
 local lastActivityAt = {}   -- [src] = epoch ms of last input/movement heartbeat
-local lastZombieKillAt = {} -- [src] = ms of last credited zombie kill (rate limit)
 
 local function NowMs()
     return GetGameTimer()
@@ -33,21 +32,16 @@ local function IsActive(src)
     if not Config.AfkThresholdMs or Config.AfkThresholdMs <= 0 then return true end
     local last = lastActivityAt[src]
     if not last then return false end
-    return (NowMs() - last) <= Config.AfkThresholdMs
+    return ((NowMs() - last) & 0xffffffff) <= Config.AfkThresholdMs
 end
 
 local function IsAlive(src)
     if not Config.RequireAlive then return true end
-    -- Try the framework first, fall back to native ped health.
-    local ok, hp = pcall(function()
-        return exports['corex-core']:GetPlayerHealth(src)
-    end)
-    if ok and tonumber(hp) then
-        return tonumber(hp) > 0
-    end
     local ped = GetPlayerPed(src)
     if not ped or ped == 0 then return false end
-    return GetEntityHealth(ped) > 0
+    -- COREX death uses raw player-ped health <= 100. GetPlayerHealth is
+    -- not a Core server export; avoid a failed cross-resource call per check.
+    return GetEntityHealth(ped) > 100
 end
 
 -- Client posts this every ~30s when the player has had any input.
@@ -61,7 +55,6 @@ AddEventHandler('playerDropped', function()
     local src = source
     if not src then return end
     lastActivityAt[src] = nil
-    lastZombieKillAt[src] = nil
 end)
 
 -- ---------------------------------------------------------------------------
@@ -89,31 +82,37 @@ CreateThread(function()
 end)
 
 -- ---------------------------------------------------------------------------
--- Zombie kills (relayed from corex-zombies)
+-- Zombie kills (server-only; no client claim or client-selected type)
 -- ---------------------------------------------------------------------------
--- corex-zombies fires its kill event client-side. We add a thin relay there
--- (see corex-zombies/client patch) that calls this server event with the
--- zombie's typeId so we can give a bonus for tougher targets.
+-- The Zombies owner consumes a native, initialized, previously-living
+-- lifetime before calling this export. Recheck the receiving Core session;
+-- never let a recycled source inherit another player's queued XP.
+local function IsCurrentRewardSession(src, expected)
+    if type(expected) ~= 'table' or expected.source ~= src then return false end
+    local checked, current = pcall(function()
+        if GetResourceState('corex-core') ~= 'started' then return false end
+        local player = exports['corex-core']:GetPlayer(src)
+        if not player or player.source ~= src or player.identifier ~= expected.identifier then return false end
+        local matched = false
+        for _, presence in ipairs(exports['corex-core']:GetPlayerPresence(expected.identifier) or {}) do
+            if presence.source == src and presence.sessionToken == expected.sessionToken then matched = true; break end
+        end
+        return matched and GetResourceState('corex-core') == 'started'
+            and GetPlayerPed(src) == expected.ped and expected.ped ~= 0
+            and GetPlayerRoutingBucket(src) == expected.bucket and IsAlive(src)
+    end)
+    return checked and current == true
+end
 
-local KILL_COOLDOWN_MS = 250  -- server-side rate limit; sanity, not balance
-
-RegisterNetEvent('corex-skills:server:reportZombieKill', function(typeId)
-    local src = source
-    if not src or src == 0 then return end
-    if not Config.Xp then return end
-
-    local now = NowMs()
-    if lastZombieKillAt[src] and (now - lastZombieKillAt[src]) < KILL_COOLDOWN_MS then
-        return
-    end
-    lastZombieKillAt[src] = now
-
-    if not IsAlive(src) then return end
+exports('AwardZombieKill', function(src, typeId, expected)
+    if GetInvokingResource() ~= 'corex-zombies' or not Config.Xp
+        or type(typeId) ~= 'string' or #typeId == 0 or #typeId > 64
+        or not IsCurrentRewardSession(src, expected) then return false end
 
     local base    = tonumber(Config.Xp.zombieKill) or 0
     local special = tonumber(Config.Xp.zombieKillSpecial) or 0
 
-    if base <= 0 and special <= 0 then return end
+    if base <= 0 and special <= 0 then return false end
 
     -- Default to walker-tier reward; bump to special for non-walker types.
     local reward = base
@@ -122,8 +121,9 @@ RegisterNetEvent('corex-skills:server:reportZombieKill', function(typeId)
     end
 
     if reward > 0 then
-        AwardXp(src, reward, 'zombie_kill')
+        return AwardXp(src, reward, 'zombie_kill')
     end
+    return false
 end)
 
 -- ---------------------------------------------------------------------------
@@ -131,16 +131,19 @@ end)
 -- ---------------------------------------------------------------------------
 -- corex-events broadcasts `corex-events:client:eventEnd` on every event end.
 -- We added a server-side companion event (`corex-events:server:eventCompleted`)
--- that fires only when the event ended successfully and carries the
--- participant list.
-AddEventHandler('corex-events:server:eventCompleted', function(eventId, participants)
+-- for normal completion or timer expiry, not admin cancellation. Built-in
+-- events include a fourth-argument session map; recheck each entry immediately
+-- before awarding, since an earlier recipient's metadata write may yield.
+-- Trusted server extensions using the legacy three-argument event remain valid.
+AddEventHandler('corex-events:server:eventCompleted', function(eventId, participants, eventType, sessions)
     if not Config.Xp or not participants then return end
     local amount = tonumber(Config.Xp.eventComplete) or 0
     if amount <= 0 then return end
 
     for _, src in ipairs(participants) do
         src = tonumber(src)
-        if src and IsAlive(src) then
+        if src and IsAlive(src) and (sessions == nil or
+            (type(sessions) == 'table' and IsCurrentRewardSession(src, sessions[src]))) then
             AwardXp(src, amount, 'event_complete:' .. tostring(eventId or '?'))
         end
     end
@@ -178,7 +181,7 @@ AddEventHandler('corex-survival:server:onInfectionCured', function(src, fromValu
     if not Config.Xp or not src then return end
     if (tonumber(fromValue) or 0) < 50 then return end
     local amount = tonumber(Config.Xp.infectionCured) or 0
-    if amount > 0 then
+    if amount > 0 and IsAlive(src) then
         AwardXp(src, amount, 'infection_cured')
     end
 end)

@@ -22,8 +22,43 @@ local lastState = {
 -- changed (avoid spamming SetPedMaxHealth every tick).
 local appliedEffects = {
     maxHealthMul = 1.0,
-    sprintMul    = 1.0
 }
+local staminaCapacity
+
+local function ApplyStaminaCapacity(multiplier)
+    local player, ped = PlayerId(), PlayerPedId()
+    local currentMax = GetPlayerMaxStamina(player)
+    if type(currentMax) ~= 'number' or currentMax <= 0 then return end
+    if not staminaCapacity or staminaCapacity.player ~= player then
+        staminaCapacity = {ped=ped, player=player, base=currentMax, applied=currentMax}
+    elseif math.abs(currentMax - staminaCapacity.applied) > 0.001 then
+        -- Another resource has taken ownership; don't overwrite its setting.
+        return
+    end
+    staminaCapacity.ped = ped -- Native stamina belongs to Player, not the ped.
+    multiplier = tonumber(multiplier) or 1.0
+    if multiplier ~= multiplier or multiplier < 1.0 or multiplier > 10.0 then multiplier = 1.0 end
+    local desired = staminaCapacity.base * multiplier
+    local before = GetPlayerStamina(player)
+    if math.abs(desired - currentMax) > 0.001 and SetPlayerMaxStamina(player, desired) then
+        staminaCapacity.applied = desired
+        -- Capacity is not a refill. Respec only clamps excess current stamina.
+        local preserved = math.min(before, desired)
+        if GetPlayerStamina(player) ~= preserved then SetPlayerStamina(player, preserved) end
+    end
+end
+
+local function RestoreStaminaCapacity()
+    local owned = staminaCapacity
+    staminaCapacity = nil
+    if not owned or PlayerId() ~= owned.player then return end
+    local before = GetPlayerStamina(owned.player)
+    if math.abs(GetPlayerMaxStamina(owned.player) - owned.applied) <= 0.001
+        and SetPlayerMaxStamina(owned.player, owned.base) then
+        local preserved = math.min(before, owned.base)
+        if GetPlayerStamina(owned.player) ~= preserved then SetPlayerStamina(owned.player, preserved) end
+    end
+end
 
 -- ---------------------------------------------------------------------------
 -- Core init
@@ -155,41 +190,50 @@ local function ApplyNativeEffects(mods)
     local ped = PlayerPedId()
     if not ped or ped == 0 then return end
 
-    -- Max health: vanilla GTA caps at 200; we scale that.
+    -- Player health has a 100-point engine offset. Scale usable HP, not
+    -- that offset: +20% means 100 -> 120 usable HP (raw 200 -> 220).
     local mhMul = tonumber(mods.maxHealth) or 1.0
-    local desiredMax = math.floor(200 * mhMul)
-    if mhMul ~= appliedEffects.maxHealthMul or GetPedMaxHealth(ped) ~= desiredMax then
+    local desiredMax = 100 + math.floor(100 * mhMul)
+    local previousMax = GetPedMaxHealth(ped)
+    if previousMax ~= desiredMax then
+        local current = GetEntityHealth(ped)
         SetPedMaxHealth(ped, desiredMax)
-        -- Bring current HP up only if we boosted; never auto-heal during play.
-        if mhMul > appliedEffects.maxHealthMul then
-            local current = GetEntityHealth(ped)
-            if current > 0 and current < desiredMax then
-                local boost = math.floor(200 * (mhMul - appliedEffects.maxHealthMul))
-                SetEntityHealth(ped, math.min(desiredMax, current + boost))
-            end
+        -- Only a real native maximum increase grants the added capacity.
+        -- Cache resets/resource restarts must not heal or resurrect players.
+        if current > 100 and desiredMax > previousMax then
+            SetEntityHealth(ped, math.min(desiredMax, current + desiredMax - previousMax))
         end
         appliedEffects.maxHealthMul = mhMul
     end
 
-    -- Sprint multiplier: combines staminaRegen (positive) and sprintCost
-    -- (negative) into a single 1.0..1.49 boost. Native is hard-capped at 1.49.
-    local stamMul = tonumber(mods.staminaRegen) or 1.0
-    local costMul = tonumber(mods.sprintCost)   or 1.0
-    local boost = 1.0
-    if stamMul > 1.0 then boost = boost + (stamMul - 1.0) * 0.5 end
-    if costMul < 1.0 then boost = boost + (1.0 - costMul) * 0.5 end
-    boost = math.min(1.49, math.max(1.0, boost))
-    if math.abs(boost - appliedEffects.sprintMul) > 0.001 then
-        SetRunSprintMultiplierForPlayer(PlayerId(), boost)
-        appliedEffects.sprintMul = boost
-    end
-
-    -- Stamina pool: when endurance is unlocked, top up the stat so sprinting
-    -- doesn't drain to zero quickly. Stat hash for MP slot 0.
-    if stamMul > 1.0 then
-        StatSetInt(`MP0_STAMINA`, 100, true)
-    end
+    ApplyStaminaCapacity(mods.maxStamina)
 end
+
+-- Endurance accelerates recovery, not movement speed. Observe native stamina
+-- recovery and add only the configured fraction of that positive delta. The
+-- baseline includes our last successful write, preventing self-compounding.
+CreateThread(function()
+    local previous, previousPed
+    while true do
+        local regen = tonumber(lastState.modifiers and lastState.modifiers.staminaRegen) or 1.0
+        Wait(regen > 1.0 and 100 or 500)
+        regen = tonumber(lastState.modifiers and lastState.modifiers.staminaRegen) or 1.0
+        local ped = PlayerPedId()
+        local owned = staminaCapacity
+        if regen > 1.0 and regen <= 10.0 and owned and ped == owned.ped
+            and GetEntityHealth(ped) > 100
+            and math.abs(GetPlayerMaxStamina(owned.player) - owned.applied) <= 0.001 then
+            local current = GetPlayerStamina(owned.player)
+            if previousPed == ped and previous and current > previous then
+                local recovered = math.min(owned.applied, current + (current - previous) * (regen - 1.0))
+                if recovered > current and SetPlayerStamina(owned.player, recovered) then current = recovered end
+            end
+            previous, previousPed = current, ped
+        else
+            previous, previousPed = nil, nil
+        end
+    end
+end)
 
 -- Public client export — other resources read live skill modifiers without
 -- going through a server callback. Returns a neutral table if not synced yet
@@ -350,10 +394,9 @@ RegisterCommand('myskills', function()
     ))
 end, false)
 
--- Re-apply max HP / sprint after respawn (fresh ped wipes them).
+-- Re-apply health and stamina capacity after respawn.
 AddEventHandler('playerSpawned', function()
     appliedEffects.maxHealthMul = -1   -- force re-apply
-    appliedEffects.sprintMul    = -1
     SetTimeout(500, function()
         if lastState.modifiers then
             ApplyNativeEffects(lastState.modifiers)
@@ -441,6 +484,14 @@ end)
 
 AddEventHandler('onResourceStop', function(resourceName)
     if GetCurrentResourceName() ~= resourceName then return end
+    RestoreStaminaCapacity()
+    if lockpickActive then
+        SendNUIMessage({ action = 'lockpickStop' })
+        if lockpickResolver then lockpickResolver(false) end
+        lockpickResolver = nil
+        lockpickActive = false
+        SetNuiFocus(false, false)
+    end
     if isOpen then
         SendNUIMessage({ action = 'close' })
         SetNuiFocus(false, false)

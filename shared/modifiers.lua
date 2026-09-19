@@ -26,6 +26,7 @@ CorexSkills.MOD_DEFAULTS = {
 
     -- Survivor ----------------------------------------------------------------
     maxHealth        = { default = 1.0,   kind = 'mul' },  -- higher = more HP
+    maxStamina       = { default = 1.0,   kind = 'mul' },  -- higher = larger stamina pool
     staminaRegen     = { default = 1.0,   kind = 'mul' },  -- higher = faster regen
     sprintCost       = { default = 1.0,   kind = 'mul' },  -- lower = cheaper sprint
     hungerDrain      = { default = 1.0,   kind = 'mul' },  -- lower = drains slower
@@ -77,12 +78,13 @@ CorexSkills.SKILL_EFFECTS = {
 
     -- SURVIVOR ----------------------------------------------------------------
     s_tough       = { maxHealth = 1.20 },                  -- +20% HP
-    s_endurance   = { staminaRegen = 1.30, sprintCost = 0.75 },
+    s_endurance   = { maxStamina = 1.30, staminaRegen = 1.25 },
     s_iron_body   = { hungerDrain = 0.65, thirstDrain = 0.65 },
     s_cold        = { coldDamage = 0.50 },
     s_bleed       = { bleedRate = 0.50 },
-    s_plague      = { biteChance = 0.50, plagueResist = 0.50 },
-    s_immunity    = { biteChance = 0.25, plagueResist = 0.75, biteImmunity = true },
+    s_plague      = { biteChance = 0.50 },
+    -- Requires s_plague: .50 * .50 = .25 (75% bite resistance), not bite immunity.
+    s_immunity    = { biteChance = 0.50, plagueResist = 1.0 },
 
     -- CRAFTSMAN ---------------------------------------------------------------
     k_quick    = { craftSpeed = 1.25 },                    -- +25% craft speed

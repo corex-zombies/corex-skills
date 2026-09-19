@@ -1,6 +1,6 @@
 Config = {}
 
-Config.Debug = true
+Config.Debug = false
 
 -- Starting points granted to fresh players (one-time on first sync).
 Config.StartingPoints = 3
@@ -33,8 +33,8 @@ Config.MaxXpTotal = 1000000
 -- XP sources. Set any value to 0 to disable that source.
 
 Config.Xp = {
-    playtimeIntervalMs = 30 * 1000,              -- 30 ثانية بدل 30 دقيقة
-    playtimeAmount     = 50,
+    playtimeIntervalMs = 30 * 60 * 1000,         -- every 30 minutes of the server's playtime cycle
+    playtimeAmount     = 50,                     -- 100 XP/point = 1 point/hour for active players
     zombieKill         = 5,
     zombieKillSpecial  = 15,
     eventComplete      = 100,
@@ -42,36 +42,13 @@ Config.Xp = {
     redzoneContainer   = 25,
     infectionCured     = 50
 }
-Config.AfkThresholdMs = 60 * 1000  
-
--- Config.Xp = {
---     -- Playtime drip: players who stay logged in (and not AFK) get a slow drip
---     -- so casual players can still progress, but it should never dominate.
---     playtimeIntervalMs = 30 * 60 * 1000,  -- every 30 minutes
---     playtimeAmount     = 50,              -- = 0.5 point / 30 min = 1 point / hour
-
---     -- Zombie kills. Many small grants > one big grant: keeps engagement up.
---     zombieKill         = 5,               -- 5 XP per kill (20 kills = 1 point)
---     zombieKillSpecial  = 15,              -- bonus for special types (brute, etc.)
-
---     -- Events (corex-events): grants on successful completion to participants.
---     eventComplete      = 100,             -- = 1 point per completed event
---     eventParticipate   = 25,              -- consolation if event ends without you
-
---     -- Loot pickups inside redzones / event containers.
---     redzoneContainer   = 25,              -- 4 containers = 1 point
-
---     -- Survival milestones (corex-survival).
---     infectionCured     = 50,              -- cured >= 50% infection with antidote
---     bleedSurvived      = 10                -- (reserved for future bleed system)
--- }
 
 -- Anti-AFK: the playtime drip only fires while the player has been "active"
 -- (recent input or movement) within this window. Any input resets the timer.
 Config.AfkThresholdMs = 5 * 60 * 1000   -- 5 minutes idle = no playtime XP
 
--- Must the player be alive (HP > 0) to earn ANY XP? Keeps respawn-farming
--- exploits in check.
+-- Require a living player (raw ped health > 100) for automatic XP sources.
+-- Trusted server AwardXp/admin grants are explicit overrides, not gated here.
 Config.RequireAlive = true
 
 -- =============================================================================

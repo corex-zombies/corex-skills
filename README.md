@@ -1,8 +1,9 @@
 # corex-skills
 
 > Skill tree + XP system for the **COREX** zombie-survival framework.
-> 21 skills across Combat / Survivor / Craftsman, every one wired to a real
-> in-game effect via `corex-inventory`, `corex-survival`, and `corex-crafting`.
+> 21 skills across Combat / Survivor / Craftsman. Effects depend on their
+> consumers in Inventory, Survival and Crafting; an unlocked modifier is not
+> proof of an implemented effect. See the candidate limitations below.
 
 ```
 Dependencies : corex-core
@@ -14,7 +15,7 @@ NUI key      : K   (open / close the skill tree)
 
 ## Install
 
-1. Drop into `server-file/resources/[corex]/corex-skills/`.
+1. Place the resource at `server-data/resources/[corex]/corex-skills/`, where `server-data` is your executed server configuration's directory.
 2. `ensure corex-skills` in `server.cfg` **after** `corex-core`.
 3. Restart the server. Player metadata persists automatically through corex-core.
 
@@ -27,7 +28,7 @@ NUI key      : K   (open / close the skill tree)
 | Key | Default | What it does |
 |---|---|---|
 | `Config.Debug` | `false` | Console traces (regen-gate flips, zombie kill XP, etc.). |
-| `Config.StartingPoints` | `18` | Skill points granted to a brand-new player on first sync. |
+| `Config.StartingPoints` | `3` | Skill points granted to a brand-new player on first sync. |
 | `Config.MaxPoints` | `999` | Hard ceiling on stored skill points (anti-bug, not balance). |
 | `Config.AllowRespec` | `true` | Show the respec button in the NUI. |
 | `Config.RespecCost` | `0` | Cash cost per respec. `0` = free. |
@@ -42,7 +43,7 @@ NUI key      : K   (open / close the skill tree)
 | `Config.XpPerPoint` | `100` | XP needed to spawn 1 skill point. Spillover carries forward. |
 | `Config.MaxXpTotal` | `1 000 000` | Lifetime XP ceiling (statistic only — points keep flowing). |
 | `Config.AfkThresholdMs` | `300 000` (5 min) | Player must move at least 1m within this window to earn playtime XP. |
-| `Config.RequireAlive` | `true` | Must have HP > 0 to earn any XP source. |
+| `Config.RequireAlive` | `true` | Automatic XP sources require raw ped health above 100; trusted administrative grants are separate. |
 | `Config.ShowXpToasts` | `true` | Show a "+50 XP — Playtime" pop on every XP gain. |
 | `Config.ShowPointToasts` | `true` | Show a "+1 PT" celebration when an XP grant tips a full point. |
 
@@ -57,9 +58,11 @@ Set any value to `0` to disable that source.
 | `zombieKill` | `5` | Per zombie killed (relayed from corex-zombies). |
 | `zombieKillSpecial` | `15` | Bonus for non-walker types (brute, runner, etc.). |
 | `eventComplete` | `100` | Per player who was within 120 m when a corex-events event ended. |
-| `eventParticipate` | `25` | Consolation for being on the participants list but not the final completion. |
+| `eventParticipate` | `25` | Separate trusted-server participation integration; not an automatic consolation award. |
 | `redzoneContainer` | `25` | Per fully-emptied dynamic / event container (corex-loot). |
 | `infectionCured` | `50` | Antidote / antibiotics used at infection ≥ 50 %. |
+
+Playtime runs on a server-wide 30-minute cycle, not a separate timer counting each player's exact connected minutes. At each tick, the existing activity/alive checks decide who receives 50 XP. Two eligible ticks convert 100 XP to one point. Other XP sources can make total progression faster than one point per hour.
 
 ### Events (other resources can listen)
 
@@ -78,29 +81,33 @@ AddEventHandler('corex-skills:server:onModifiersDirty',function(src, modifiers) 
 | Branch | ID | Cost | Effect |
 |---|---|---|---|
 | Combat | `c_steady` | 1 | -25 % weapon sway, -15 % recoil |
-| Combat | `c_reload` | 2 | Reload animation 25 % faster |
-| Combat | `c_iron` | 2 | ADS transition snap (subjective) |
+| Combat | `c_reload` | 2 | Reload duration × 0.80 through the server-timed Inventory reload flow |
+| Combat | `c_iron` | 2 | Controlled aim-camera transition × 0.70 (220 ms base → 154 ms) |
 | Combat | `c_head` | 3 | +30 % headshot damage (head-bone hit detection) |
 | Combat | `c_recoil` | 4 | -50 % recoil |
-| Combat | `c_akimbo` | 4 | +40 % fire rate on pistols / SMGs |
+| Combat | `c_akimbo` | 4 | Pistol/SMG off-hand weapon + server-authorized second round; damage × 0.85 while active |
 | Combat | `c_exec` (capstone) | 6 | LASER MODE: total recoil ≤ 2 %, 2× damage on sub-30 % HP targets |
-| Survivor | `s_tough` | 1 | Max HP 200 → 240 |
-| Survivor | `s_endurance` | 2 | +30 % stamina regen, -25 % sprint cost |
+| Survivor | `s_tough` | 1 | +20 % usable health above the native 100 baseline (raw 200 → 220) |
+| Survivor | `s_endurance` | 2 | +30 % native stamina capacity and +25 % observed positive recovery; no instant refill |
 | Survivor | `s_iron_body` | 3 | Hunger / thirst drain × 0.65 |
 | Survivor | `s_cold` | 3 | Cold rise rate × 0.5 + cold damage × 0.5 |
 | Survivor | `s_bleed` | 4 | Bleed drain × 0.5 |
 | Survivor | `s_plague` | 4 | Bite chance × 0.5 |
-| Survivor | `s_immunity` (capstone) | 6 | Bites never infect |
+| Survivor | `s_immunity` (capstone) | 6 | With required Plague: 75 % lower bite infection chance; blocks airborne infection, not aura damage |
 | Craftsman | `k_quick` | 1 | Craft duration ÷ 1.25 |
 | Craftsman | `k_material` | 2 | Material cost × 0.80 |
 | Craftsman | `k_solid` | 2 | Crafted items get `qualityBonus = 0.30` (heal 30 % more) |
 | Craftsman | `k_master` | 3 | Unlocks `unlocksRareRecipes` flag + `qualityBonus = 0.15` |
 | Craftsman | `k_lock` | 4 | Lockpick green-zone +60 % |
-| Craftsman | `k_modder` | 4 | Unlocks `unlocksWeaponMods` flag |
+| Craftsman | `k_modder` | 4 | Unlocks weapon-mod recipes/install at workbenches; mod material cost × 0.80 |
 | Craftsman | `k_insta` (capstone) | 6 | 20 % chance to skip materials AND duration |
 
 Mappings live in [`shared/modifiers.lua`](shared/modifiers.lua) (`SKILL_EFFECTS` table).
 Tree positions / parents in [`shared/skills.lua`](shared/skills.lua).
+
+### Gameplay consumers
+
+Quick Reload, Iron Sights, Akimbo and Weapon Modder now have explicit consumers in `corex-inventory` / `corex-crafting`; their modifiers are no longer passive values. Reload spends ammo only after the server timer completes. Akimbo spends the second round through a server-validated request. Weapon mods require the skill, a real crafting workbench, a compatible GTA component and a crafted mod item. Native visual feel (camera easing/off-hand prop) should still be included in release gameplay acceptance, alongside Headshot/Executioner network ownership and Endurance/infection runtime checks.
 
 ---
 

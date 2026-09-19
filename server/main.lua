@@ -11,6 +11,7 @@
 -- =============================================================================
 
 local Corex
+local coreEpoch = 0
 local META_KEY = 'skills'
 
 -- Exposed to server/xp.lua via the global CorexSkillsServer table.
@@ -33,6 +34,16 @@ local function InitCorex()
     end
     return false
 end
+
+AddEventHandler('onResourceStop', function(resource)
+    if resource ~= 'corex-core' then return end
+    Corex = nil
+    coreEpoch = coreEpoch + 1
+end)
+
+AddEventHandler('onResourceStart', function(resource)
+    if resource == 'corex-core' then InitCorex() end
+end)
 
 CreateThread(function()
     local tries = 0
@@ -82,27 +93,36 @@ local function SetToList(set)
 end
 
 local function GetRawMeta(src)
-    local data
-    if Corex and Corex.Player and Corex.Player.GetMetaData then
-        data = Corex.Player.GetMetaData(src, META_KEY)
-    else
-        local ok, raw = pcall(function()
-            return exports['corex-core']:GetMetaData(src, META_KEY)
-        end)
-        if ok then data = raw end
-    end
-    if type(data) ~= 'table' then data = nil end
-    return data
+    local ok, data = pcall(function()
+        if Corex and Corex.Player and Corex.Player.GetMetaData then
+            return Corex.Player.GetMetaData(src, META_KEY)
+        end
+        return exports['corex-core']:GetMetaData(src, META_KEY)
+    end)
+    if not ok then return nil, false end
+    if type(data) ~= 'table' then return nil, true end
+    -- GetMetaData may return Core's actual table. Normalize a private copy so
+    -- a rejected migration cannot mutate the player without acknowledgement.
+    return {unlocked=data.unlocked, points=data.points, xp=data.xp, xpTotal=data.xpTotal}, true
 end
 
 local function SaveRawMeta(src, value)
-    if Corex and Corex.Player and Corex.Player.SetMetaData then
-        Corex.Player.SetMetaData(src, META_KEY, value)
-    else
-        pcall(function()
-            return exports['corex-core']:SetMetaData(src, META_KEY, value)
-        end)
-    end
+    local ok, saved = pcall(function()
+        if Corex and Corex.Player and Corex.Player.SetMetaData then
+            return Corex.Player.SetMetaData(src, META_KEY, value)
+        end
+        return exports['corex-core']:SetMetaData(src, META_KEY, value)
+    end)
+    -- An exception can happen after mutation. Never retry an unknown write.
+    return ok and saved == true
+end
+
+local function IsFinite(value)
+    return type(value) == 'number' and value == value and math.abs(value) < math.huge
+end
+
+local function StateUnavailable(src)
+    Notify(src, 'Skill state could not be confirmed. Please try again later.', 'error')
 end
 
 -- Returns a fully-populated state struct for the player, migrating older
@@ -113,7 +133,8 @@ end
 --   unlockedList (array of skill ids)
 --   unlockedSet  (lookup table {id=true})
 local function GetState(src)
-    local raw = GetRawMeta(src)
+    local raw, readable = GetRawMeta(src)
+    if not readable then return nil end
     local needsInit = false
 
     if not raw then
@@ -126,19 +147,19 @@ local function GetState(src)
         needsInit = true
     end
 
-    if type(raw.unlocked) ~= 'table' then raw.unlocked = {} end
+    if type(raw.unlocked) ~= 'table' then raw.unlocked = {}; needsInit = true end
 
-    if type(raw.points) ~= 'number' or raw.points ~= raw.points then
+    if not IsFinite(raw.points) then
         raw.points = Config.StartingPoints or 0
         needsInit = true
     end
 
-    if type(raw.xp) ~= 'number' or raw.xp ~= raw.xp then
+    if not IsFinite(raw.xp) then
         raw.xp = 0
         needsInit = true
     end
 
-    if type(raw.xpTotal) ~= 'number' or raw.xpTotal ~= raw.xpTotal then
+    if not IsFinite(raw.xpTotal) then
         raw.xpTotal = 0
         needsInit = true
     end
@@ -161,9 +182,7 @@ local function GetState(src)
 
     raw.unlocked = cleanedList
 
-    if needsInit then
-        SaveRawMeta(src, raw)
-    end
+    if needsInit and not SaveRawMeta(src, raw) then return nil end
 
     return {
         points       = raw.points,
@@ -175,7 +194,7 @@ local function GetState(src)
 end
 
 local function PersistState(src, state)
-    SaveRawMeta(src, {
+    return SaveRawMeta(src, {
         unlocked = SetToList(state.unlockedSet),
         points   = math.max(0, math.min(Config.MaxPoints or 999, math.floor(state.points or 0))),
         xp       = math.max(0, math.floor(state.xp or 0)),
@@ -184,11 +203,13 @@ local function PersistState(src, state)
 end
 
 local function ComputeMods(state)
+    if not state then return CorexSkills.NeutralModifiers() end
     return CorexSkills.ComputeModifiers(SetToList(state.unlockedSet))
 end
 
 local function BroadcastState(src, state)
     state = state or GetState(src)
+    if not state then return false end
     local mods = ComputeMods(state)
     TriggerClientEvent('corex-skills:client:syncState', src, {
         unlocked  = SetToList(state.unlockedSet),
@@ -198,6 +219,7 @@ local function BroadcastState(src, state)
         modifiers = mods
     })
     TriggerEvent(Config.Events.ModifiersDirty, src, mods)
+    return true
 end
 
 -- ---------------------------------------------------------------------------
@@ -207,30 +229,32 @@ end
 local function HasSkill(src, skillId)
     if not src or not skillId then return false end
     local state = GetState(src)
-    return state.unlockedSet[skillId] == true
+    return state ~= nil and state.unlockedSet[skillId] == true
 end
 
 local function GetUnlockedSkills(src)
     local state = GetState(src)
     local copy = {}
+    if not state then return copy end
     for i, id in ipairs(state.unlockedList) do copy[i] = id end
     return copy
 end
 
 local function GetSkillPoints(src)
     local state = GetState(src)
-    return state.points
+    return state and state.points or 0
 end
 
 local function AddSkillPoints(src, amount)
     amount = tonumber(amount)
-    if not amount or amount ~= amount then return false end
+    if not IsFinite(amount) then return false end
 
     local state = GetState(src)
+    if not state then return false end
     local before = state.points
     state.points = math.max(0, math.min(Config.MaxPoints or 999, math.floor(before + amount)))
 
-    PersistState(src, state)
+    if not PersistState(src, state) then return false end
     BroadcastState(src, state)
 
     if amount > 0 then
@@ -249,9 +273,10 @@ end
 local function AwardXp(src, amount, reason)
     amount = tonumber(amount)
     if not src or src == 0 then return false end
-    if not amount or amount ~= amount or amount <= 0 then return false end
+    if not IsFinite(amount) or amount <= 0 then return false end
 
     local state = GetState(src)
+    if not state then return false end
     local perPoint = math.max(1, math.floor(Config.XpPerPoint or 100))
 
     state.xp = math.floor(state.xp + amount)
@@ -274,7 +299,7 @@ local function AwardXp(src, amount, reason)
         state.xp = 0
     end
 
-    PersistState(src, state)
+    if not PersistState(src, state) then return false end
     BroadcastState(src, state)
 
     TriggerEvent(Config.Events.XpAwarded, src, amount, reason or 'unknown', state.xp)
@@ -317,6 +342,9 @@ end
 local function CanCraftRecipe(src, recipe)
     if type(recipe) ~= 'table' then return true end
     local state = GetState(src)
+    if not state and (recipe.requiresFlag or recipe.requiresSkill) then
+        return false, 'skill_state_unavailable'
+    end
     local mods  = ComputeMods(state)
 
     if recipe.requiresFlag then
@@ -355,8 +383,8 @@ exports('AwardXp',           function(src, n, r) return AwardXp(src, n, r) end)
 exports('GetModifiers',      function(src)       return GetModifiers(src) end)
 exports('GetModifier',       function(src, key)  return GetModifier(src, key) end)
 exports('CanCraftRecipe',    function(src, rec)  return CanCraftRecipe(src, rec) end)
-exports('GetXp',             function(src)       return GetState(src).xp end)
-exports('GetXpTotal',        function(src)       return GetState(src).xpTotal end)
+exports('GetXp',             function(src) local state=GetState(src); return state and state.xp or 0 end)
+exports('GetXpTotal',        function(src) local state=GetState(src); return state and state.xpTotal or 0 end)
 
 -- Skill catalog lookups — used by external resources (corex-crafting) to
 -- render friendly names for skill requirements / gate failures.
@@ -416,6 +444,7 @@ RegisterNetEvent('corex-skills:server:unlock', function(skillId)
     end
 
     local state = GetState(src)
+    if not state then StateUnavailable(src); return end
     if state.unlockedSet[skillId] then
         Notify(src, 'Already unlocked.', 'info')
         BroadcastState(src, state)
@@ -436,7 +465,7 @@ RegisterNetEvent('corex-skills:server:unlock', function(skillId)
     state.points = state.points - cost
     state.unlockedSet[skillId] = true
 
-    PersistState(src, state)
+    if not PersistState(src, state) then StateUnavailable(src); return end
     BroadcastState(src, state)
 
     TriggerEvent(Config.Events.Unlocked, src, skillId)
@@ -452,6 +481,7 @@ RegisterNetEvent('corex-skills:server:respec', function()
     end
 
     local state = GetState(src)
+    if not state then StateUnavailable(src); return end
     local refundList = {}
     for id in pairs(state.unlockedSet) do refundList[#refundList + 1] = id end
     local refund = CorexSkills.TotalCost(refundList)
@@ -474,10 +504,15 @@ RegisterNetEvent('corex-skills:server:respec', function()
             return
         end
 
-        if Corex and Corex.Player and Corex.Player.RemoveMoney then
-            Corex.Player.RemoveMoney(src, 'cash', cost)
-        else
-            pcall(function() exports['corex-core']:RemoveMoney(src, 'cash', cost) end)
+        local charged, paid = pcall(function()
+            if Corex and Corex.Player and Corex.Player.RemoveMoney then
+                return Corex.Player.RemoveMoney(src, 'cash', cost)
+            end
+            return exports['corex-core']:RemoveMoney(src, 'cash', cost)
+        end)
+        if not charged or paid ~= true then
+            Notify(src, 'Payment failed. Your skills have not been reset.', 'error')
+            return
         end
     end
 
@@ -485,19 +520,43 @@ RegisterNetEvent('corex-skills:server:respec', function()
     if Config.AutoGrantRoot then state.unlockedSet['root'] = true end
     state.points = math.min(Config.MaxPoints or 999, state.points + refund)
 
-    PersistState(src, state)
+    if not PersistState(src, state) then
+        if cost > 0 then
+            Notify(src, 'Payment was taken, but the skill reset could not be confirmed. Do not pay again; contact an administrator.', 'error')
+        else
+            StateUnavailable(src)
+        end
+        return
+    end
     BroadcastState(src, state)
 
     TriggerEvent(Config.Events.Respec, src)
     Notify(src, ('Respec complete — +%d points refunded.'):format(refund), 'success')
 end)
 
--- Hook playerReady from corex-core so the client always has fresh state when
--- the player finishes loading.
-AddEventHandler('corex:server:playerReady', function(src, _player)
+-- The source number can be reused while the deferred sync is waiting. Core
+-- presence tokens are opaque strings and restart-local, so fence both token
+-- and Core generation before any initialization or client publication.
+local function ReadySession(src)
+    local ok, token = pcall(function()
+        if GetResourceState('corex-core') ~= 'started' then return nil end
+        local player = exports['corex-core']:GetPlayer(src)
+        if not player or player.source ~= src or type(player.identifier) ~= 'string' then return nil end
+        for _, entry in ipairs(exports['corex-core']:GetPlayerPresence(player.identifier) or {}) do
+            if entry.source == src and type(entry.sessionToken) == 'string' and #entry.sessionToken > 0 then
+                return player.identifier .. '\0' .. entry.sessionToken
+            end
+        end
+    end)
+    return ok and token or nil
+end
+
+AddEventHandler('corex:server:playerReady', function(src)
     if not src or src == 0 then return end
+    local epoch, token = coreEpoch, ReadySession(src)
+    if not token then return end
     SetTimeout(500, function()
-        BroadcastState(src)
+        if epoch == coreEpoch and ReadySession(src) == token then BroadcastState(src) end
     end)
 end)
 
@@ -519,20 +578,27 @@ RegisterCommand('giveskillpoints', function(src, args)
         if src > 0 then Notify(src, 'Usage: /giveskillpoints [id] amount', 'error') end
         return
     end
-    AddSkillPoints(target, amount)
-    if src > 0 then Notify(src, ('Gave %d skill points to %d'):format(amount, target), 'success') end
+    local ok = AddSkillPoints(target, amount)
+    if src > 0 then
+        if ok then Notify(src, ('Gave %d skill points to %d'):format(amount, target), 'success')
+        else StateUnavailable(src) end
+    end
 end, true)
 
 RegisterCommand('resetskills', function(src, args)
     local target = tonumber((args or {})[1]) or src
     if not target or target == 0 then return end
 
-    SaveRawMeta(target, {
+    local saved = SaveRawMeta(target, {
         unlocked = Config.AutoGrantRoot and { 'root' } or {},
         points   = Config.StartingPoints or 0,
         xp       = 0,
         xpTotal  = 0
     })
+    if not saved then
+        if src > 0 then StateUnavailable(src) end
+        return
+    end
     BroadcastState(target)
     if src > 0 then Notify(src, ('Reset skills for player %d'):format(target), 'success') end
 end, true)
